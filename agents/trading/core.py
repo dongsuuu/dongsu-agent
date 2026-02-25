@@ -457,17 +457,66 @@ class TradingJournal:
         os.makedirs(self.journals_path, exist_ok=True)
     
     def create_entry(self, symbol: str, signals: List[Signal], positions: List[Position], current_price: float = 0) -> str:
-        """새 매매일지 작성"""
+        """새 매매일지 작성 - 심볼별 분리, 시간순 누적"""
         now = datetime.now()
-        filename = f"journal_{now.strftime('%Y-%m-%d_%H-%M')}.md"
+        # 심볼별 파일: BTC_2026-02-25.md, ETH_2026-02-25.md
+        filename = f"{symbol}_{now.strftime('%Y-%m-%d')}.md"
         filepath = os.path.join(self.journals_path, filename)
         
-        content = self._format_journal(symbol, signals, positions, now, current_price)
-        
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(content)
+        # 기존 파일 있으면 끝에 추가, 없으면 새로 생성
+        if os.path.exists(filepath):
+            with open(filepath, 'a', encoding='utf-8') as f:
+                f.write(self._format_entry(symbol, signals, positions, now, current_price))
+        else:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(self._format_journal_header(symbol, now))
+                f.write(self._format_entry(symbol, signals, positions, now, current_price))
         
         return filepath
+    
+    def _format_journal_header(self, symbol: str, dt: datetime) -> str:
+        """일지 헤더 (처음 생성시만)"""
+        return f"""# {symbol} Trading Journal - {dt.strftime('%Y-%m-%d')}
+
+> 자동 생성된 매매일지 | dongsu-trading-agent
+> 실시간 가격: Binance API
+
+---
+
+"""
+    
+    def _format_entry(self, symbol: str, signals: List[Signal], positions: List[Position], dt: datetime, current_price: float) -> str:
+        """개별 분석 항목"""
+        entry = f"""## 📊 Analysis - {dt.strftime('%H:%M')} KST
+
+| 지표 | 값 |
+|------|-----|
+| 시간 | {dt.strftime('%H:%M')} |
+| 현재가 | ${current_price:.2f} |
+
+"""
+        
+        if signals:
+            for i, signal in enumerate(signals, 1):
+                emoji = "🟢 BUY" if signal.signal_type == SignalType.BUY else "🔴 SELL" if signal.signal_type == SignalType.SELL else "⚪ HOLD"
+                entry += f"""### {emoji} | {signal.timeframe}
+
+| 항목 | 값 |
+|------|-----|
+| 진입가 | ${signal.price:.2f} |
+| 목표가 | ${signal.target_price:.2f} |
+| 손절가 | ${signal.stop_loss:.2f} |
+| 기대 수익률 | {((signal.target_price - signal.price) / signal.price * 100):.2f}% |
+| 리스크 | {abs((signal.stop_loss - signal.price) / signal.price * 100):.2f}% |
+| 승률 | {signal.confidence * 100:.0f}% |
+| 근거 | {signal.reason} |
+
+"""
+        else:
+            entry += "**시그널 없음** - 현재 조건 미충족\n\n"
+        
+        entry += "---\n\n"
+        return entry
     
     def _format_journal(self, symbol: str, signals: List[Signal], positions: List[Position], dt: datetime, current_price: float = 0) -> str:
         """매매일지 마크다운 포맷"""
