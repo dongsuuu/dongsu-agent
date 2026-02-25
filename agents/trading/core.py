@@ -124,20 +124,79 @@ class Position:
     pnl_percent: Optional[float] = None
 
 class DataFetcher:
-    """Binance API로 차트 데이터 수집"""
-    
-    BASE_URL = "https://api.binance.com"
+    """다중 오라클 가격 데이터 수집 - Pyth 우선, Binance 백업"""
     
     def __init__(self):
         self.session = requests.Session()
+        self.binance_url = "https://api.binance.com"
+        self.pyth_url = "https://hermes.pyth.network"
+        
+        # Pyth Price IDs
+        self.PYTH_PRICE_IDS = {
+            "BTC": "0xe62df6c8b4a85fe1f67dab53838813a513f50e13e5af36e3a6ac4e82c9e1b7b5",
+            "ETH": "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+            "SOL": "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cf2b1e6e5e5a5",
+        }
+    
+    def get_current_price(self, symbol: str) -> float:
+        """현재 가격 조회 - Pyth 우선, 실패시 Binance"""
+        # 1. Pyth 시도
+        pyth_price = self._get_pyth_price(symbol)
+        if pyth_price:
+            return pyth_price
+        
+        # 2. Binance 백업
+        return self._get_binance_price(symbol)
+    
+    def _get_pyth_price(self, symbol: str) -> Optional[float]:
+        """Pyth 오라클에서 가격 조회"""
+        try:
+            price_id = self.PYTH_PRICE_IDS.get(symbol)
+            if not price_id:
+                return None
+            
+            url = f"{self.pyth_url}/v2/updates/price/latest"
+            params = {"ids[]": price_id}
+            
+            response = self.session.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            parsed = data.get("parsed", [])
+            if not parsed:
+                return None
+            
+            price_data = parsed[0].get("price", {})
+            raw_price = int(price_data.get("price", 0))
+            exponent = int(price_data.get("expo", -8))
+            price = raw_price * (10 ** exponent)
+            
+            return price
+            
+        except Exception as e:
+            print(f"Pyth error: {e}")
+            return None
+    
+    def _get_binance_price(self, symbol: str) -> float:
+        """Binance API에서 가격 조회 (백업)"""
+        try:
+            url = f"{self.binance_url}/api/v3/ticker/price"
+            params = {"symbol": f"{symbol}USDT"}
+            
+            response = self.session.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            return float(data["price"])
+            
+        except Exception as e:
+            print(f"Binance error: {e}")
+            return 0.0
     
     def fetch_candles(self, symbol: str, interval: str, limit: int = 100) -> List[Candle]:
-        """
-        Binance API로 캔들 데이터 수집
-        interval: 1m, 5m, 15m, 30m, 1h, 4h, 1d
-        """
+        """Binance API로 캔들 데이터 수집"""
         symbol = f"{symbol}USDT"
-        url = f"{self.BASE_URL}/api/v3/klines"
+        url = f"{self.binance_url}/api/v3/klines"
         
         params = {
             "symbol": symbol,
@@ -150,11 +209,10 @@ class DataFetcher:
             response.raise_for_status()
             data = response.json()
             
-            # Binance returns: [timestamp, open, high, low, close, volume, ...]
             candles = []
             for item in data:
                 candles.append(Candle(
-                    timestamp=item[0],  # already in milliseconds
+                    timestamp=item[0],
                     open=float(item[1]),
                     high=float(item[2]),
                     low=float(item[3]),

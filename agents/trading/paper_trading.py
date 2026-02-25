@@ -62,6 +62,10 @@ class PaperTradingEngine:
             (datetime.now(), initial_capital)
         ]
         
+        # TradingJournal 통합
+        from core import TradingJournal
+        self.journal = TradingJournal()
+        
         # 학습 데이터
         self.learning_data = {
             "strategy_performance": {},
@@ -73,7 +77,7 @@ class PaperTradingEngine:
     def open_position(self, symbol: str, direction: str, entry_price: float,
                      target_price: float, stop_loss: float, 
                      confidence: float = 0.5) -> PaperTrade:
-        """포지션 진입"""
+        """포지션 진입 + 매매일지 작성"""
         # 자본의 10% 투자 (리스크 관리)
         position_size = (self.current_capital * 0.1) / entry_price
         
@@ -91,6 +95,9 @@ class PaperTradingEngine:
         
         self.positions.append(trade)
         
+        # ✅ 매매일지 작성 - 진입 기록
+        self._write_journal_entry(trade, "OPEN", confidence)
+        
         # 학습 데이터 기록
         self._record_open(trade, confidence)
         
@@ -98,7 +105,7 @@ class PaperTradingEngine:
     
     def close_position(self, trade_id: str, exit_price: float, 
                       reason: str = "signal") -> Optional[PaperTrade]:
-        """포지션 청산"""
+        """포지션 청산 + 매매일지 작성"""
         trade = next((p for p in self.positions if p.id == trade_id), None)
         if not trade:
             return None
@@ -126,10 +133,77 @@ class PaperTradingEngine:
         # 성과 업데이트
         self._update_performance(trade)
         
+        # ✅ 매매일지 작성 - 청산 기록
+        self._write_journal_close(trade)
+        
         # 학습 데이터 기록
         self._record_close(trade)
         
         return trade
+    
+    def _write_journal_entry(self, trade: PaperTrade, action: str, confidence: float):
+        """매매일지에 진입 기록 작성"""
+        try:
+            journal_entry = f"""
+## 🟢 포지션 진입 - {trade.entry_time.strftime('%H:%M:%S')}
+
+| 항목 | 값 |
+|------|-----|
+| 심볼 | {trade.symbol} |
+| 방향 | {trade.direction.upper()} |
+| 진입가 | ${trade.entry_price:.2f} |
+| 목표가 | ${trade.target_price:.2f} |
+| 손절가 | ${trade.stop_loss:.2f} |
+| 수량 | {trade.size:.6f} |
+| 신뢰도 | {confidence*100:.0f}% |
+| 예상 R/R | {abs(trade.target_price - trade.entry_price) / abs(trade.stop_loss - trade.entry_price):.2f} |
+
+---
+"""
+            # 파일에 추가
+            journal_path = f"/root/.openclaw/workspace/archive/trading/journals/{trade.symbol}_{trade.entry_time.strftime('%Y-%m-%d')}.md"
+            os.makedirs(os.path.dirname(journal_path), exist_ok=True)
+            
+            with open(journal_path, 'a', encoding='utf-8') as f:
+                f.write(journal_entry)
+                
+            print(f"   📝 매매일지 기록: {journal_path}")
+            
+        except Exception as e:
+            print(f"   ⚠️ 매매일지 작성 오류: {e}")
+    
+    def _write_journal_close(self, trade: PaperTrade):
+        """매매일지에 청산 기록 작성"""
+        try:
+            emoji = "🎉" if trade.pnl > 0 else "😢"
+            result = "익절" if trade.pnl > 0 else "손절"
+            
+            journal_entry = f"""
+## {emoji} 포지션 청산 - {trade.exit_time.strftime('%H:%m:%S')}
+
+| 항목 | 값 |
+|------|-----|
+| 심볼 | {trade.symbol} |
+| 방향 | {trade.direction.upper()} |
+| 진입가 | ${trade.entry_price:.2f} |
+| 청산가 | ${trade.exit_price:.2f} |
+| 청산 사유 | {trade.exit_reason} |
+| 보유 시간 | {(trade.exit_time - trade.entry_time).total_seconds() / 60:.1f}분 |
+| PnL | ${trade.pnl:+.2f} ({trade.pnl_percent:+.2f}%) |
+| 결과 | **{result}** |
+
+---
+"""
+            # 파일에 추가
+            journal_path = f"/root/.openclaw/workspace/archive/trading/journals/{trade.symbol}_{trade.exit_time.strftime('%Y-%m-%d')}.md"
+            
+            with open(journal_path, 'a', encoding='utf-8') as f:
+                f.write(journal_entry)
+                
+            print(f"   📝 매매일지 기록: {journal_path}")
+            
+        except Exception as e:
+            print(f"   ⚠️ 매매일지 작성 오류: {e}")
     
     def check_positions(self, current_prices: Dict[str, float]):
         """포지션 청산 조건 체크"""
