@@ -310,10 +310,14 @@ class SignalGenerator:
         
         current_price = closes[-1]
         
+        # 수수료 고려 (Binance 기준: 진입 0.05% + 청산 0.05% = 0.1%)
+        FEE_RATE = 0.001  # 0.1%
+        MIN_PROFIT = 0.005  # 최소 0.5% 수익 (수수료 커버 + 실익)
+        
         # Golden Cross (Bullish)
         if prev_ema9 <= prev_ema21 and curr_ema9 > curr_ema21:
-            target = current_price * 1.05  # 5% target
-            stop = current_price * 0.97    # 3% stop
+            target = current_price * (1 + MIN_PROFIT + 0.01)  # 0.6% 이상
+            stop = current_price * 0.97
             
             return Signal(
                 symbol=symbol,
@@ -323,9 +327,9 @@ class SignalGenerator:
                 target_price=target,
                 stop_loss=stop,
                 confidence=0.75,
-                indicators={"ema9": curr_ema9, "ema21": curr_ema21},
+                indicators={"ema9": curr_ema9, "ema21": curr_ema21, "fee_rate": FEE_RATE},
                 timestamp=candles[-1].timestamp,
-                reason=f"EMA Golden Cross: EMA9({curr_ema9:.2f}) > EMA21({curr_ema21:.2f})"
+                reason=f"EMA Golden Cross (Fee adjusted: {FEE_RATE*100}%)"
             )
         
         # Dead Cross (Bearish)
