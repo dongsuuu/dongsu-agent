@@ -75,24 +75,25 @@ class Position:
     pnl_percent: Optional[float] = None
 
 class DataFetcher:
-    """Coinbase Pro API로 차트 데이터 수집"""
+    """Binance API로 차트 데이터 수집"""
     
-    BASE_URL = "https://api.exchange.coinbase.com"
+    BASE_URL = "https://api.binance.com"
     
     def __init__(self):
         self.session = requests.Session()
     
-    def fetch_candles(self, symbol: str, granularity: int, start: str, end: str) -> List[Candle]:
+    def fetch_candles(self, symbol: str, interval: str, limit: int = 100) -> List[Candle]:
         """
-        granularity: 60(1m), 300(5m), 900(15m), 3600(1h), 21600(6h), 86400(1d)
+        Binance API로 캔들 데이터 수집
+        interval: 1m, 5m, 15m, 30m, 1h, 4h, 1d
         """
-        product_id = f"{symbol}-USD"
-        url = f"{self.BASE_URL}/products/{product_id}/candles"
+        symbol = f"{symbol}USDT"
+        url = f"{self.BASE_URL}/api/v3/klines"
         
         params = {
-            "start": start,
-            "end": end,
-            "granularity": granularity
+            "symbol": symbol,
+            "interval": interval,
+            "limit": limit
         }
         
         try:
@@ -100,19 +101,19 @@ class DataFetcher:
             response.raise_for_status()
             data = response.json()
             
-            # Coinbase returns: [timestamp, low, high, open, close, volume]
+            # Binance returns: [timestamp, open, high, low, close, volume, ...]
             candles = []
             for item in data:
                 candles.append(Candle(
-                    timestamp=item[0] * 1000,  # to milliseconds
-                    open=item[3],
-                    high=item[2],
-                    low=item[1],
-                    close=item[4],
-                    volume=item[5]
+                    timestamp=item[0],  # already in milliseconds
+                    open=float(item[1]),
+                    high=float(item[2]),
+                    low=float(item[3]),
+                    close=float(item[4]),
+                    volume=float(item[5])
                 ))
             
-            return sorted(candles, key=lambda x: x.timestamp)
+            return candles
             
         except Exception as e:
             print(f"Error fetching candles: {e}")
@@ -120,26 +121,18 @@ class DataFetcher:
     
     def fetch_all_timeframes(self, symbol: str) -> Dict[str, List[Candle]]:
         """모든 시간대 데이터 수집"""
-        # Use fixed historical dates instead of current time
-        end = datetime(2025, 2, 25, 6, 0, 0)  # Fixed end time
-        
         timeframes = {
-            "1m": (60, end - timedelta(hours=6)),
-            "5m": (300, end - timedelta(days=1)),
-            "15m": (900, end - timedelta(days=3)),
-            "1h": (3600, end - timedelta(days=7)),
-            "4h": (14400, end - timedelta(days=30)),
-            "1d": (86400, end - timedelta(days=90))
+            "1m": ("1m", 100),
+            "5m": ("5m", 100),
+            "15m": ("15m", 100),
+            "1h": ("1h", 100),
+            "4h": ("4h", 100),
+            "1d": ("1d", 100)
         }
         
         result = {}
-        for tf, (granularity, start) in timeframes.items():
-            candles = self.fetch_candles(
-                symbol, 
-                granularity,
-                start.strftime("%Y-%m-%dT%H:%M:%S"),
-                end.strftime("%Y-%m-%dT%H:%M:%S")
-            )
+        for tf, (interval, limit) in timeframes.items():
+            candles = self.fetch_candles(symbol, interval, limit)
             result[tf] = candles
             
         return result
@@ -463,21 +456,22 @@ class TradingJournal:
         self.journals_path = os.path.join(base_path, "journals")
         os.makedirs(self.journals_path, exist_ok=True)
     
-    def create_entry(self, symbol: str, signals: List[Signal], positions: List[Position]) -> str:
+    def create_entry(self, symbol: str, signals: List[Signal], positions: List[Position], current_price: float = 0) -> str:
         """새 매매일지 작성"""
         now = datetime.now()
         filename = f"journal_{now.strftime('%Y-%m-%d_%H-%M')}.md"
         filepath = os.path.join(self.journals_path, filename)
         
-        content = self._format_journal(symbol, signals, positions, now)
+        content = self._format_journal(symbol, signals, positions, now, current_price)
         
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(content)
         
         return filepath
     
-    def _format_journal(self, symbol: str, signals: List[Signal], positions: List[Position], dt: datetime) -> str:
+    def _format_journal(self, symbol: str, signals: List[Signal], positions: List[Position], dt: datetime, current_price: float = 0) -> str:
         """매매일지 마크다운 포맷"""
+        
         
         journal = f"""# Trading Journal - {symbol} | {dt.strftime('%Y-%m-%d %H:%M')} KST
 
@@ -487,7 +481,7 @@ class TradingJournal:
 |------|-----|
 | 분석 시간 | {dt.strftime('%Y-%m-%d %H:%M')} |
 | 심볼 | {symbol} |
-| 현재가 | ${signals[0].price if signals else 'N/A'} |
+| 현재가 | ${current_price:.2f} |
 
 ## 🎯 생성된 시그널
 
@@ -571,11 +565,16 @@ class TradingAgent:
         
         # 3. 매매일지 작성
         print("  → 매매일지 작성 중...")
-        journal_path = self.journal.create_entry(symbol, all_signals, self.positions)
+        current_price = all_data.get("1h", [{}])[-1].close if all_data.get("1h") else 0
+        journal_path = self.journal.create_entry(symbol, all_signals, self.positions, current_price)
+        
+        # Get current price from most recent candle
+        current_price = all_data.get("1h", [{}])[-1].close if all_data.get("1h") else 0
         
         result = {
             "symbol": symbol,
             "timestamp": int(datetime.now().timestamp() * 1000),
+            "current_price": current_price,
             "signals": all_signals,
             "journal_path": journal_path,
             "data_summary": {tf: len(candles) for tf, candles in all_data.items()}
